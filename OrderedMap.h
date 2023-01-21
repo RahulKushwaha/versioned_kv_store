@@ -7,11 +7,11 @@
 
 #include <atomic>
 #include <cstdint>
-#include <set>
 #include <map>
+#include <set>
+#include <shared_mutex>
 #include <utility>
 #include <vector>
-#include <shared_mutex>
 
 namespace rk::projects::data_structures {
 
@@ -32,7 +32,11 @@ class OrderedMap {
   struct MagicSequenceNumbers {
     static constexpr SequenceType
         MAX_SEQUENCE = std::numeric_limits<SequenceType>::max();
-    static constexpr SequenceType TOMBSTONE = 1;
+  };
+
+  enum class ControlBits {
+    ORDINARY_VALUE = 1,
+    TOMBSTONE = 2,
   };
 
  public:
@@ -58,24 +62,14 @@ class OrderedMap {
       currentDataStore_{std::make_shared<StoreType>()} {}
 
   void add(Key k, Value v) {
-    std::unique_lock uniqueLock(mtx_);
-
-    SequenceType sequenceNum = seq_++;
-    auto key = InternalKey{std::move(k), sequenceNum};
-
-    currentDataStore_->emplace(key, std::move(v));
-
-    if (currentDataStore_->size() > MAX_SEGMENT_SIZE) {
-      Metadata metadata{currentDataStore_->begin()->first.key_, // MinKey
-                        currentDataStore_->crbegin()->first.key_, // MaxKey
-                        currentDataStore_};
-      metadataStore_.emplace_back(metadata);
-
-      currentDataStore_ = std::make_shared<StoreType>();
-    }
+    add(std::move(k), std::move(v), ControlBits::ORDINARY_VALUE);
   }
 
-  std::optional<Value> contains(Key key) {
+  void erase(Key key) {
+    add(std::move(key), {}, ControlBits::TOMBSTONE);
+  }
+
+  std::optional<Value> get(Key key) {
     std::vector<Metadata> metadataList;
 
     {
@@ -112,16 +106,41 @@ class OrderedMap {
   }
 
  private:
+  void add(Key k, Value v, ControlBits controlBits) {
+    std::unique_lock uniqueLock(mtx_);
+
+    SequenceType sequenceNum = seq_++;
+    auto key =
+        InternalKey{std::move(k), sequenceNum,
+                    static_cast<std::uint32_t>(controlBits)};
+
+    currentDataStore_->emplace(key, std::move(v));
+
+    if (currentDataStore_->size() > MAX_SEGMENT_SIZE) {
+      Metadata metadata{currentDataStore_->begin()->first.key_, // MinKey
+                        currentDataStore_->crbegin()->first.key_, // MaxKey
+                        currentDataStore_};
+      metadataStore_.emplace_back(metadata);
+
+      currentDataStore_ = std::make_shared<StoreType>();
+    }
+  }
+
   std::optional<Value> getValue(const Key &key, const StoreType &store) {
-    if (auto
-          itr = store.upper_bound({key, MagicSequenceNumbers::MAX_SEQUENCE});
+    if (auto itr = store.upper_bound({key, MagicSequenceNumbers::MAX_SEQUENCE});
         itr != currentDataStore_->end()) {
+
+      if (store.empty()) {
+        return {};
+      }
 
       if (itr == store.end()) {
         itr--;
       }
 
-      if (itr->first.controlBits_ == MagicSequenceNumbers::TOMBSTONE) {
+      if (itr->first.key_ != key
+          || itr->first.controlBits_
+              == static_cast<std::uint32_t>(ControlBits::TOMBSTONE)) {
         return {};
       }
 
