@@ -24,6 +24,13 @@ TEST(OrderedMapTests, deleteElement) {
   ASSERT_FALSE(map.get(key).has_value());
 }
 
+TEST(OrderedMapTests, getOnEmptyMap) {
+  OrderedMap map;
+  std::string key{"Hello"};
+
+  ASSERT_FALSE(map.get(key).has_value());
+}
+
 TEST(OrderedMapTests, addRemoveAddElement) {
   OrderedMap map;
   std::string key{"Hello"};

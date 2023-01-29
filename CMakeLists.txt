@@ -10,8 +10,10 @@ include_directories(/opt/homebrew/include)
 link_directories(/opt/homebrew/lib)
 
 add_executable(KeyValueStoreWithStableIteror main.cpp OrderedMap.h)
+target_link_libraries(KeyValueStoreWithStableIteror jemalloc)
 
 enable_testing()
 
-add_executable(KeyValueStoreTests OrderedMap.h OrderedMapTest.cc)
-target_link_libraries(KeyValueStoreTests gtest gtest_main)
+add_executable(KeyValueStoreTests OrderedMap.h OrderedMapTest.cc
+        KeyValueSegment.h Common.h KeyValueSegmentIteratorTest.cc RandomOperationsTest.cc)
+target_link_libraries(KeyValueStoreTests gtest gtest_main -fsanitize=undefined)

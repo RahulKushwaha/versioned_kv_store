@@ -13,30 +13,19 @@
 #include <utility>
 #include <vector>
 
+#include "Common.h"
+#include "KeyValueSegment.h"
+
 namespace rk::projects::data_structures {
 
 class OrderedMap {
  private:
 
-  struct DataStoreKeyComparator;
-  struct InternalKey;
-
-  using Key = std::string;
-  using Value = std::string;
-  using SequenceType = std::uint64_t;
-  using ControlBitsType = std::uint32_t;
-  using StoreType = std::map<InternalKey, Value, DataStoreKeyComparator>;
-
-  static constexpr std::size_t MAX_SEGMENT_SIZE = 100;
+  static constexpr std::size_t MAX_SEGMENT_SIZE = 5;
 
   struct MagicSequenceNumbers {
     static constexpr SequenceType
         MAX_SEQUENCE = std::numeric_limits<SequenceType>::max();
-  };
-
-  enum class ControlBits {
-    ORDINARY_VALUE = 1,
-    TOMBSTONE = 2,
   };
 
  public:
@@ -44,16 +33,29 @@ class OrderedMap {
    public:
     explicit Iterator(OrderedMap &orderedMap)
         : orderedMap_{orderedMap},
-          seq_{orderedMap.getCurrentSequenceNum()} {}
+          maxSeq_{orderedMap.getCurrentSequenceNum()},
+          metadata_{orderedMap_.keyValueSegmentStore_},
+          next_{} {}
 
-    bool hasNext();
+    bool hasNext() {
+
+    }
+
     std::optional<Value> next() {
       return {};
     }
 
    private:
+    void populateNext() {
+    }
+
+   private:
+    using KeyValue = std::pair<Key, Value>;
+
     const OrderedMap &orderedMap_;
-    SequenceType seq_;
+    SequenceType maxSeq_;
+    std::vector<KeyValueSegment> metadata_;
+    std::optional<KeyValue> next_;
   };
 
  public:
@@ -69,31 +71,43 @@ class OrderedMap {
     add(std::move(key), {}, ControlBits::TOMBSTONE);
   }
 
-  std::optional<Value> get(Key key) {
-    std::vector<Metadata> metadataList;
+  std::optional<std::string> get(Key key) {
+    std::vector<KeyValueSegment> metadataList;
+    ValueResult valueResult;
 
-    {
-      std::shared_lock sharedLock{mtx_};
-      if (key >= currentDataStore_->begin()->first.key_
-          && key <= currentDataStore_->rbegin()->first.key_) {
-        auto value = getValue(key, *currentDataStore_);
-        return value;
+    std::shared_lock sharedLock{mtx_};
+    if (!currentDataStore_->empty()
+        && key >= currentDataStore_->cbegin()->first.key_
+        && key <= currentDataStore_->crbegin()->first.key_) {
+      valueResult = getValue(key, *currentDataStore_);
+      if (valueResult.valueResultType == ValueResultType::DELETED) {
+        return {};
       }
 
-      // Not able to find the element in the current map.
-      // Find it in the previous blocks.
-      // Create copy to avoid lock contention.
-      // Find easier way to copy(instead of copying objects).
-      metadataList = metadataStore_;
+      if (valueResult.valueResultType == ValueResultType::PRESENT) {
+        return valueResult.rawValue;
+      }
     }
 
-    // Fix this use reverse ranges.
-    for (int index = metadataList.size() - 1; index >= 0; index--) {
-      const auto &metadata = metadataList[index];
+    // Not able to find the element in the current map.
+    // Find it in the previous blocks.
+    // Create copy to avoid lock contention.
+    // Find easier way to copy(instead of copying objects).
+    metadataList = keyValueSegmentStore_;
+
+    for (auto itr = metadataList.crbegin(); itr != metadataList.crend();
+         itr++) {
+      const auto &metadata = *itr;
 
       if (key >= metadata.minKey_ && key <= metadata.maxKey_) {
-        auto value = getValue(key, *metadata.dataStore_);
-        return value;
+        valueResult = getValue(key, *metadata.dataStore_);
+        if (valueResult.valueResultType == ValueResultType::DELETED) {
+          return {};
+        }
+
+        if (valueResult.valueResultType == ValueResultType::PRESENT) {
+          return valueResult.rawValue;
+        }
       }
     }
 
@@ -103,6 +117,10 @@ class OrderedMap {
   SequenceType getCurrentSequenceNum() {
     std::shared_lock sharedLock{mtx_};
     return seq_;
+  }
+
+  StoreType getCurrentStore() {
+    return *currentDataStore_;
   }
 
  private:
@@ -117,66 +135,41 @@ class OrderedMap {
     currentDataStore_->emplace(key, std::move(v));
 
     if (currentDataStore_->size() > MAX_SEGMENT_SIZE) {
-      Metadata metadata{currentDataStore_->begin()->first.key_, // MinKey
-                        currentDataStore_->crbegin()->first.key_, // MaxKey
-                        currentDataStore_};
-      metadataStore_.emplace_back(metadata);
+      KeyValueSegment metadata{currentDataStore_->begin()->first.key_, // MinKey
+                               currentDataStore_->crbegin()->first.key_, // MaxKey
+                               currentDataStore_,
+                               std::move(deletionFilter_)};
+      keyValueSegmentStore_.emplace_back(metadata);
 
       currentDataStore_ = std::make_shared<StoreType>();
+      deletionFilter_ = DeletionFilterType{};
     }
   }
 
-  std::optional<Value> getValue(const Key &key, const StoreType &store) {
-    if (auto itr = store.upper_bound({key, MagicSequenceNumbers::MAX_SEQUENCE});
-        itr != currentDataStore_->end()) {
+  ValueResult getValue(const Key &key,
+                       const StoreType &store) {
+    auto itr = store.upper_bound({key, MagicSequenceNumbers::MAX_SEQUENCE});
+    itr--;
 
-      if (store.empty()) {
-        return {};
-      }
-
-      if (itr == store.end()) {
-        itr--;
-      }
-
-      if (itr->first.key_ != key
-          || itr->first.controlBits_
-              == static_cast<std::uint32_t>(ControlBits::TOMBSTONE)) {
-        return {};
-      }
-
-      return itr->second;
+    if (itr->first.key_ == key
+        && itr->first.controlBits_
+            == static_cast<std::uint32_t>(ControlBits::TOMBSTONE)) {
+      return ValueResult{"", ValueResultType::DELETED};
     }
 
-    return {};
+    if (itr->first.key_ != key) {
+      return ValueResult{"", ValueResultType::NOT_PRESENT};
+    }
+
+    return ValueResult{itr->second, ValueResultType::PRESENT};
   }
+
 
  private:
-
-  struct InternalKey {
-    std::string key_;
-    SequenceType sequenceNum_;
-    ControlBitsType controlBits_;
-  };
-
-  struct DataStoreKeyComparator {
-    bool operator()(const InternalKey &x, const InternalKey &y) const {
-      if (x.key_ == y.key_) {
-        return x.sequenceNum_ > y.sequenceNum_;
-      }
-
-      return x.key_ < y.key_;
-    }
-  };
-
-  struct Metadata {
-    Key minKey_;
-    Key maxKey_;
-    std::shared_ptr<StoreType> dataStore_;
-  };
-
   SequenceType seq_;
-  std::vector<Metadata> metadataStore_;
+  std::vector<KeyValueSegment> keyValueSegmentStore_;
   std::shared_ptr<StoreType> currentDataStore_;
+  DeletionFilterType deletionFilter_;
 
   std::shared_mutex mtx_;
 };
