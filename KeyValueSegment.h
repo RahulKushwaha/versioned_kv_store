@@ -5,8 +5,6 @@
 #ifndef KEYVALUESTOREWITHSTABLEITEROR_KEYVALUESEGMENT_H
 #define KEYVALUESTOREWITHSTABLEITEROR_KEYVALUESEGMENT_H
 
-#include <iostream>
-
 #include "Common.h"
 
 namespace rk::projects::data_structures {
@@ -46,7 +44,7 @@ struct KeyValueSegment {
 class KeyValueSegmentIterator {
  public:
   explicit KeyValueSegmentIterator(const KeyValueSegment &keyValueSegment)
-      : keyValueSegment_{keyValueSegment},
+      : keyValueSegment_{std::ref(keyValueSegment)},
         itr_{keyValueSegment.dataStore_->cbegin()} {
   }
 
@@ -55,7 +53,7 @@ class KeyValueSegmentIterator {
       populateNext({});
     }
 
-    return *next_ != keyValueSegment_.dataStore_->cend();
+    return *next_ != keyValueSegment_.get().dataStore_->cend();
   }
 
   ConstStoreTypeIterator next() {
@@ -68,9 +66,7 @@ class KeyValueSegmentIterator {
   void populateNext(std::string userKey) {
     auto key = std::move(userKey);
 
-    while (itr_ != keyValueSegment_.dataStore_->cend()) {
-      std::cout << "HERE: " << itr_->first.key_ << " : "
-                << itr_->first.sequenceNum_ << std::endl;
+    while (itr_ != keyValueSegment_.get().dataStore_->cend()) {
       if (itr_->first.controlBits_
           == static_cast<ControlBitsType>(ControlBits::TOMBSTONE)) {
         key = itr_->first.key_;
@@ -85,7 +81,7 @@ class KeyValueSegmentIterator {
     next_ = {itr_};
   }
 
-  const KeyValueSegment &keyValueSegment_;
+  std::reference_wrapper<const KeyValueSegment> keyValueSegment_;
   ConstStoreTypeIterator itr_;
   std::optional<ConstStoreTypeIterator> next_;
 };

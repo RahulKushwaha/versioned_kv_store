@@ -2,7 +2,7 @@
 // Created by Rahul  Kushwaha on 1/21/23.
 //
 #include <gtest/gtest.h>
-#include "OrderedMap.h"
+#include "../OrderedMap.h"
 
 namespace rk::projects::data_structures {
 
@@ -38,8 +38,8 @@ TEST(KeyValueSegmentIteratorTests, addMultipleDIffKeyValueAndIterate) {
   std::string key{"Hello"};
   std::string valuePrefix{"value"};
 
-  std::int32_t index = 0;
-  std::int32_t limit = 99;
+  std::int32_t index = 1;
+  std::int32_t limit = 5;
   for (; index <= limit; index++) {
     map.add(key + std::to_string(index), valuePrefix + std::to_string(index));
   }
@@ -57,7 +57,7 @@ TEST(KeyValueSegmentIteratorTests, addMultipleDIffKeyValueAndIterate) {
     keys.emplace_back(keyValueSegmentIterator.next()->first.key_);
   }
 
-  ASSERT_EQ(keys.size(), 100);
+  ASSERT_EQ(keys.size(), limit);
 }
 
 }

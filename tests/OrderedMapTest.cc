@@ -3,7 +3,7 @@
 //
 
 #include <gtest/gtest.h>
-#include "OrderedMap.h"
+#include "../OrderedMap.h"
 
 namespace rk::projects::data_structures {
 
